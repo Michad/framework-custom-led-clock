@@ -1,0 +1,27 @@
+[Unit]
+Description=Framework 16 LED matrix clock
+
+[Service]
+ExecStart=/usr/local/bin/led-clock -brightness 120 -fade 5s
+# Retry if the matrices aren't enumerated yet or get unplugged.
+Restart=always
+RestartSec=5
+
+# Run as a throwaway user with access to the serial devices only.
+DynamicUser=yes
+SupplementaryGroups=dialout
+DevicePolicy=closed
+DeviceAllow=char-ttyACM rw
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
