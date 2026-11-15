@@ -18,8 +18,38 @@ func main() {
 	fade := flag.Duration("fade", time.Second, "how long each seconds LED takes to fade in")
 	roll := flag.Duration("roll", time.Second, "how long the minute-change animations last: the seconds roll-down and the clock digit scramble (0 disables them)")
 	rollInterval := flag.Duration("roll-interval", 16*time.Millisecond, "time to sleep between display refreshes during the roll-down")
-	brightness := flag.Uint("brightness", 0, "LED brightness 1-255 (0 leaves it unchanged)")
+	brightness := flag.Uint("brightness", 0, "LED brightness 1-255 (0 leaves it unchanged); the daytime brightness when -night-brightness is set")
+	nightBrightness := flag.Uint("night-brightness", 0, "LED brightness 1-255 at night (0 disables dimming); requires -brightness")
+	dawn := flag.String("dawn", "07:00", "time of day (HH:MM) to start brightening to -brightness")
+	dusk := flag.String("dusk", "21:00", "time of day (HH:MM) to start dimming to -night-brightness")
+	transition := flag.Duration("transition", time.Hour, "how long brightening and dimming take")
 	flag.Parse()
+
+	var schedule *BrightnessSchedule
+	if *nightBrightness > 0 {
+		if *brightness == 0 {
+			log.Fatal("-night-brightness requires -brightness")
+		}
+		dawnAt, err := ParseTimeOfDay(*dawn)
+		if err != nil {
+			log.Fatalf("-dawn: %v", err)
+		}
+		duskAt, err := ParseTimeOfDay(*dusk)
+		if err != nil {
+			log.Fatalf("-dusk: %v", err)
+		}
+		schedule = &BrightnessSchedule{
+			Day:        byte(min(*brightness, 255)),
+			Night:      byte(min(*nightBrightness, 255)),
+			Dawn:       dawnAt,
+			Dusk:       duskAt,
+			Transition: *transition,
+		}
+		if err := schedule.Validate(); err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("brightness %d by day, %d at night; dawn=%s dusk=%s transition=%s", schedule.Day, schedule.Night, *dawn, *dusk, *transition)
+	}
 
 	if *leftPath == "" || *rightPath == "" {
 		found, err := FindMatrices()
@@ -49,12 +79,23 @@ func main() {
 	}
 	defer right.Close()
 
-	if *brightness > 0 {
+	// setBrightness sends b to both matrices unless it was already sent.
+	// A failed send is retried on the next refresh.
+	var lastBrightness int = -1
+	setBrightness := func(b byte) {
+		if int(b) == lastBrightness {
+			return
+		}
+		lastBrightness = int(b)
 		for _, m := range []*Matrix{left, right} {
-			if err := m.SetBrightness(byte(min(*brightness, 255))); err != nil {
+			if err := m.SetBrightness(b); err != nil {
 				log.Print(err)
+				lastBrightness = -1
 			}
 		}
+	}
+	if schedule == nil && *brightness > 0 {
+		setBrightness(byte(min(*brightness, 255)))
 	}
 
 	sigs := make(chan os.Signal, 1)
@@ -66,6 +107,9 @@ func main() {
 
 	refresh := func() {
 		now := time.Now()
+		if schedule != nil {
+			setBrightness(schedule.At(now))
+		}
 		if err := left.Draw(ClockFrame(now, *roll)); err != nil {
 			log.Print(err)
 		}

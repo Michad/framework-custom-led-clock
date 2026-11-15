@@ -34,7 +34,11 @@ make
 |---|---|---|
 | `-left` | auto | Serial device of the left matrix |
 | `-right` | auto | Serial device of the right matrix |
-| `-brightness` | `0` | LED brightness 1-255; 0 leaves it unchanged |
+| `-brightness` | `0` | LED brightness 1-255; 0 leaves it unchanged. The daytime brightness when dimming is on |
+| `-night-brightness` | `0` | LED brightness 1-255 at night; 0 disables dimming. Requires `-brightness` |
+| `-dawn` | `07:00` | Time of day to start brightening to `-brightness` |
+| `-dusk` | `21:00` | Time of day to start dimming to `-night-brightness` |
+| `-transition` | `1h` | How long brightening and dimming take |
 | `-fade` | `1s` | How long each seconds LED takes to fade in |
 | `-roll` | `1s` | Length of the minute-change animations; 0 disables them |
 | `-interval` | `50ms` | Sleep between refreshes |
@@ -44,6 +48,14 @@ Without `-left` and `-right`, the matrices are found by USB ID (`32ac:0020`)
 and sorted by device path; the second becomes the left matrix and the first
 the right. If they come out on the wrong sides, pass both paths explicitly,
 e.g. `-left /dev/ttyACM0 -right /dev/ttyACM1`.
+
+### Dimming at night
+
+With `-night-brightness`, the brightness follows the local time of day: it
+starts ramping from `-brightness` down to `-night-brightness` at `-dusk`,
+and back up at `-dawn`, each ramp taking `-transition`. For example,
+`-brightness 120 -night-brightness 15 -dusk 22:00 -dawn 06:30` is fully dim
+from 23:00 and fully bright from 07:30.
 
 ### Permissions
 
@@ -94,7 +106,9 @@ matrices at a time.
 |---|---|
 | `main.go` | Flags, device setup, refresh loop, signal handling |
 | `ledmatrix.go` | Serial protocol and device discovery |
+| `schedule.go` | Time-of-day brightness schedule |
 | `render.go` | Clock font and layout, seconds fill, minute-change animations |
+| `schedule_test.go` | Tests for the brightness schedule |
 | `preview_test.go` | Renders digits to a PNG for `make preview` |
 
 ### Changing the digits
