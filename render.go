@@ -112,6 +112,32 @@ var digitRows = [4]int{1, 9, 18, 26}
 // new one.
 func ClockFrame(t time.Time, scramble time.Duration) *Frame {
 	var f Frame
+	drawClock(&f, t, scramble, clockX)
+	return &f
+}
+
+// Left column of the digits: centred on a full matrix, or flush left in
+// compact mode to leave room for the seconds.
+const (
+	clockX        = 2
+	compactClockX = 0
+)
+
+// compactSecondsCols is how many columns on the right the seconds use in
+// compact mode.
+const compactSecondsCols = 3
+
+// CompactFrame renders the clock and the seconds on a single matrix: the
+// digits flush left and the seconds filling the rightmost columns.
+func CompactFrame(t time.Time, fill Fill, fade, roll, fillBy time.Duration) *Frame {
+	var f Frame
+	drawClock(&f, t, roll, compactClockX)
+	drawSeconds(&f, t, fill, fade, roll, fillBy, Width-compactSecondsCols, compactSecondsCols)
+	return &f
+}
+
+// drawClock draws HH:MM into f with the digits' left edge at column x0.
+func drawClock(f *Frame, t time.Time, scramble time.Duration, x0 int) {
 	elapsed := time.Duration(t.Second())*time.Second + time.Duration(t.Nanosecond())
 	cur := t.Format("1504")
 	prev := cur
@@ -120,7 +146,7 @@ func ClockFrame(t time.Time, scramble time.Duration) *Frame {
 	}
 	for i := range cur {
 		if prev[i] == cur[i] {
-			drawDigit(&f, i, rune(cur[i]))
+			drawDigit(f, i, rune(cur[i]), x0)
 			continue
 		}
 		p := float64(elapsed) / float64(scramble)
@@ -138,22 +164,21 @@ func ClockFrame(t time.Time, scramble time.Duration) *Frame {
 					on = digits[rune(prev[i])][gy][gx] == '#'
 				}
 				if on {
-					f[2+gx][digitRows[i]+gy] = digitLevel
+					f[x0+gx][digitRows[i]+gy] = digitLevel
 				}
 			}
 		}
 	}
-	return &f
 }
 
 // scrambleFlicker is how long each random pattern of a scramble is shown.
 const scrambleFlicker = 50 * time.Millisecond
 
-func drawDigit(f *Frame, i int, c rune) {
+func drawDigit(f *Frame, i int, c rune, x0 int) {
 	for gy, row := range digits[c] {
 		for gx, px := range row {
 			if px == '#' {
-				f[2+gx][digitRows[i]+gy] = digitLevel
+				f[x0+gx][digitRows[i]+gy] = digitLevel
 			}
 		}
 	}
@@ -170,52 +195,116 @@ func random(key uint64) float64 {
 	return float64(z>>11) / (1 << 53)
 }
 
-// SecondsFrame lights LEDs from the bottom, row by row, as the current
-// minute progresses, the last one coming on at fillBy. Each LED fades in from
-// off to full brightness over the fade duration after its turn comes up; near
-// the top the fades are shortened so they all finish by fillBy, leaving the
-// whole display lit at the end of the minute.
+// SecondsFrame lights the LEDs as the current minute progresses, in the
+// pattern set by fill, the last one coming on at fillBy. Each LED fades in
+// from off to full brightness over the fade duration after its turn comes
+// up; near the end the fades are shortened so they all finish by fillBy,
+// leaving the whole display lit at the end of the minute.
 //
 // For the first roll duration of each minute, the previous minute's full
-// display rolls down to empty, a soft edge sweeping whole rows out from the
-// top, instead of switching off at once.
-func SecondsFrame(t time.Time, fade, roll, fillBy time.Duration) *Frame {
+// display empties instead of switching off at once: its fill plays in
+// reverse, sped up to fit the roll duration, the last LED to have come on
+// going off first. A soft edge several rows' worth of LEDs wide fades them
+// out, so slideup rolls down from the top (slidedown up from the bottom),
+// random winks out at random, creepup's (and creepdown's) columns shrink at
+// their own wobbling speeds and spiral unwinds from the middle. Disco ignores fade,
+// switching LEDs fully on and off, and empties by rewinding its share lit
+// back to none at its rewind speed. Topo also ignores fade (its picks fade
+// in fill.N at a time) and empties by rewinding, its patches shrinking away.
+// Infect likewise ignores fade and rewinds, the light drawing back into its
+// seeds. Binary ignores fade too, its boxes switching fully on and off,
+// and empties by counting back down to zero.
+func SecondsFrame(t time.Time, fill Fill, fade, roll, fillBy time.Duration) *Frame {
 	var f Frame
+	drawSeconds(&f, t, fill, fade, roll, fillBy, 0, Width)
+	return &f
+}
+
+// drawSeconds draws the seconds fill into the cols columns of f starting at
+// column x0.
+func drawSeconds(f *Frame, t time.Time, fill Fill, fade, roll, fillBy time.Duration, x0, cols int) {
+	mode := fill.Mode
 	elapsed := time.Duration(t.Second())*time.Second + time.Duration(t.Nanosecond())
-	// Time between successive LEDs starting to fade in.
-	step := fillBy / (Width*Height - 1)
-	for i := 0; i < Width*Height; i++ {
-		start := time.Duration(i) * step
+	minute := t.Unix() / 60
+	pixel := func(led int) *byte { return &f[x0+led%cols][Height-1-led/cols] }
+
+	if mode == FillInfect {
+		drawInfect(pixel, cols, minute, elapsed, fillBy, fill.N)
+		if elapsed < roll {
+			// Rewind the previous minute's infection, back to its seeds.
+			p := float64(elapsed) / float64(roll)
+			p = p * p * (3 - 2*p)
+			drawInfect(pixel, cols, minute-1, time.Duration((1-p)*float64(fillBy)), fillBy, fill.N)
+		}
+		return
+	}
+
+	if mode == FillTopo {
+		drawTopo(pixel, cols, minute, elapsed, fillBy, fill.N)
+		if elapsed < roll {
+			// Rewind the previous minute's topo, patches shrinking away.
+			p := float64(elapsed) / float64(roll)
+			p = p * p * (3 - 2*p)
+			drawTopo(pixel, cols, minute-1, time.Duration((1-p)*float64(fillBy)), fillBy, fill.N)
+		}
+		return
+	}
+
+	if mode == FillBinary {
+		drawBinary(pixel, cols, elapsed, fillBy)
+		if elapsed < roll {
+			// Count the previous minute back down to zero.
+			p := float64(elapsed) / float64(roll)
+			p = p * p * (3 - 2*p)
+			drawBinary(pixel, cols, time.Duration((1-p)*float64(fillBy)), fillBy)
+		}
+		return
+	}
+
+	if mode == FillDisco {
+		drawDisco(pixel, cols, minute, elapsed, fillBy)
+		if elapsed < roll {
+			// Rewind the previous minute's disco: the share lit falls from
+			// all to none, the beats racing by as fast as the rewind.
+			p := float64(elapsed) / float64(roll)
+			p = p * p * (3 - 2*p)
+			drawDisco(pixel, cols, minute-1, time.Duration((1-p)*float64(fillBy)), fillBy)
+		}
+		return
+	}
+
+	for led, start := range fillStarts(mode, cols, minute, fillBy) {
 		since := elapsed - start
-		if since <= 0 {
-			break
+		if since < 0 {
+			continue
 		}
 		d := min(fade, fillBy-start)
 		level := 1.0
 		if since < d {
 			level = float64(since) / float64(d)
 		}
-		f[i%Width][Height-1-i/Width] = brightness(level)
+		*pixel(led) = brightness(level)
 	}
 
 	if elapsed < roll {
 		p := float64(elapsed) / float64(roll)
 		// Ease in and out so the roll starts and lands gently.
 		p = p * p * (3 - 2*p)
-		// pos is the height (in rows from the bottom) of the soft edge's top.
-		pos := (1 - p) * (Height + rollEdgeRows)
-		for r := 0; r < Height; r++ {
-			level := min(max((pos-float64(r))/rollEdgeRows, 0), 1)
-			y := Height - 1 - r
-			for x := 0; x < Width; x++ {
-				f[x][y] = max(f[x][y], brightness(level))
-			}
+		// The previous minute's fill, rewound: rewind runs from past fillBy
+		// back to 0, and each LED fades from full to off over edge as
+		// rewind passes back through its start time. edge is how long
+		// rollEdgeRows rows take to fill on average.
+		edge := float64(fillBy) * float64(rollEdgeRows*cols) / float64(cols*Height-1)
+		rewind := (1 - p) * (float64(fillBy) + edge)
+		for led, start := range fillStarts(mode, cols, minute-1, fillBy) {
+			level := min(max((rewind-float64(start))/edge, 0), 1)
+			*pixel(led) = max(*pixel(led), brightness(level))
 		}
 	}
-	return &f
 }
 
-// rollEdgeRows is how many rows the roll-down's soft edge spans.
+// rollEdgeRows is how many rows' worth of LEDs the end-of-minute clearing's
+// soft edge spans.
 const rollEdgeRows = 4
 
 // brightness converts a 0-1 level to an LED value, squared so fades look

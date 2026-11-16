@@ -2,7 +2,7 @@
 Description=Framework 16 LED matrix clock
 
 [Service]
-ExecStart=/usr/local/bin/led-clock -brightness 120 -night-brightness 5 -fade 5s -
+ExecStart=/usr/local/bin/led-clock -brightness 120 -night-brightness 5 -fade 5s -fill infect,10
 # Retry if the matrices aren't enumerated yet or get unplugged.
 Restart=always
 RestartSec=5
