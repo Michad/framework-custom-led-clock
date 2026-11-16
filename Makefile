@@ -5,8 +5,10 @@ UNITDIR    ?= /etc/systemd/system
 SERVICE    := $(BINARY).service
 PREVIEW    ?= docs/preview.png
 SOURCES    := $(wildcard *.go) go.mod go.sum
+EMULATOR   := led-emulator
+EMU_SOURCES := $(wildcard cmd/led-emulator/*) go.mod go.sum
 
-.PHONY: all build test vet fmt preview run install install-service uninstall clean
+.PHONY: all build test vet fmt preview run emulator emulate install install-service uninstall clean
 
 all: build
 
@@ -31,6 +33,16 @@ preview:
 run: $(BINARY)
 	./$(BINARY)
 
+# The hardware emulator (see README). `make emulate` runs the clock on it;
+# pass more flags with ARGS, e.g. make emulate ARGS="-fill spiral".
+emulator: $(EMULATOR)
+
+$(EMULATOR): $(EMU_SOURCES)
+	go build -o $(EMULATOR) ./cmd/led-emulator
+
+emulate: $(EMULATOR) $(BINARY)
+	./$(BINARY) -emulator $(ARGS)
+
 # Install the binary only. Use DESTDIR for staged installs. Run `make` as
 # yourself first so `sudo make install` doesn't need Go.
 install: $(BINARY)
@@ -52,4 +64,4 @@ uninstall:
 	-systemctl daemon-reload
 
 clean:
-	rm -f $(BINARY) $(SERVICE).tmp
+	rm -f $(BINARY) $(EMULATOR) $(SERVICE).tmp

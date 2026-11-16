@@ -49,6 +49,7 @@ make
 | `-roll` | `1s` | Length of the minute-change animations; 0 disables them |
 | `-interval` | `50ms` | Sleep between refreshes |
 | `-roll-interval` | `16ms` | Sleep between refreshes during the minute-change animation |
+| `-emulator` | off | Run on emulated matrices instead (see [Emulator](#emulator)); not allowed with `-left` or `-right` |
 
 Without `-left` and `-right`, the matrices are found by USB ID (`32ac:0020`)
 and sorted by device path; the second becomes the left matrix and the first
@@ -179,12 +180,73 @@ sudo make uninstall           # stop, disable and remove
 Stop any manually started `led-clock` first; only one process can drive the
 matrices at a time.
 
+## Emulator
+
+`led-emulator` stands in for the matrices, so the clock can be run and
+watched without the hardware. Each emulated matrix is a pseudo-terminal
+that decodes the serial protocol as the module's firmware does, and a web
+page shows the panels lit as the real ones are: white LEDs glowing among
+the unlit yellow packages, dimmed by the brightness setting.
+
+The quickest way is `-emulator`:
+
+```
+make emulator
+./led-clock -emulator [flags]
+```
+
+This starts `led-emulator` (the one next to `led-clock`, else the one on
+`$PATH`), runs the clock on its matrices, and stops it when the clock
+exits. Open the address it prints (http://127.0.0.1:8034/). It works with
+`-compact left` or `-compact right`, emulating just that matrix, but not
+with `-left` or `-right`. `make emulate` builds both and runs
+`./led-clock -emulator`; pass more flags with `ARGS`, e.g.
+`make emulate ARGS="-fill spiral"`.
+
+The emulator runs in its own process group, so Ctrl-C stops the clock,
+which blanks the displays and then stops the emulator. If the clock is
+killed, the emulator is stopped too.
+
+To keep the emulator running across clock restarts, start it yourself:
+
+```
+./led-emulator
+```
+
+It prints the `led-clock` command to run against it, e.g.:
+
+```
+./led-clock -left /tmp/led-emulator/left -right /tmp/led-emulator/right
+```
+
+For compact mode, emulate one matrix with `./led-emulator -panels left`
+and run `./led-clock -compact left -left /tmp/led-emulator/left`.
+
+| Flag | Default | Description |
+|---|---|---|
+| `-panels` | `left,right` | Names of the matrices to emulate, shown left to right |
+| `-dir` | `$TMPDIR/led-emulator` | Where to put a symlink to each matrix's port, named after it (empty for none; then use the `/dev/pts/N` paths it prints) |
+| `-listen` | `127.0.0.1:8034` | Address to serve the page on |
+| `-brightness` | `255` | Brightness the matrices start at, until `led-clock` sets it |
+| `-hint` | `true` | Print the ports and the `led-clock` command to run |
+
+Under each panel the page shows when it last got a command, its brightness
+and the frames per second it's receiving. The left matrix only changes when
+the time does, so it hears nothing for most of each minute.
+
+It understands Brightness, StageCol and FlushCols, plus DrawBW; other
+commands are logged once and skipped. If `led-clock` is killed without
+closing the port, the emulator clears the port's exclusive lock after a
+second of quiet so the next `led-clock` can open it.
+
 ## Make targets
 
 | Target | Description |
 |---|---|
 | `build` (default) | Build `led-clock` |
 | `run` | Build and run in the foreground |
+| `emulator` | Build `led-emulator` |
+| `emulate` | Build both and run `led-clock -emulator $(ARGS)` (see [Emulator](#emulator)) |
 | `test`, `vet`, `fmt` | Go checks and formatting |
 | `preview` | Render the clock digits to `docs/preview.png` |
 | `install` | Install the binary |
@@ -198,6 +260,7 @@ matrices at a time.
 |---|---|
 | `main.go` | Flags, device setup, refresh loop, signal handling |
 | `compact.go` | The `-compact` flag, which works bare or with a side |
+| `emulator.go` | `-emulator`: starting and stopping `led-emulator` |
 | `ledmatrix.go` | Serial protocol and device discovery |
 | `schedule.go` | Time-of-day brightness schedule |
 | `render.go` | Clock font and layout, seconds display, minute-change animations |
@@ -206,6 +269,7 @@ matrices at a time.
 | `render_test.go` | Tests for the compact layout and fill modes |
 | `compact_test.go` | Tests for parsing `-compact` |
 | `preview_test.go` | Renders digits to a PNG for `make preview` |
+| `cmd/led-emulator/` | The hardware emulator: pseudo-terminals (`pty.go`), protocol decoding (`panel.go`), web page (`web.go`, `index.html`) |
 
 ### Changing the digits
 

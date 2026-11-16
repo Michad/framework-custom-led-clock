@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LED Matrix Emulator</title>
+<style>
+  :root {
+    --bg: #101113;
+    --text: #d8dade;
+    --muted: #868a93;
+    --ok: #5fd38a;
+    --idle: #6b6f78;
+    --bad: #e0715f;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 12px 16px 0;
+  }
+  h1 { font-size: 15px; font-weight: 600; margin: 0; }
+  #link { color: var(--muted); font-size: 13px; }
+  main {
+    flex: 1;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    gap: 48px;
+    padding: 16px;
+    overflow: auto;
+  }
+  figure { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  canvas { display: block; }
+  figcaption { text-align: center; }
+  .name { font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--idle); }
+  .dot.on { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  .meta { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .path { color: var(--muted); font: 11px ui-monospace, "SF Mono", Menlo, monospace; }
+</style>
+</head>
+<body>
+<header>
+  <h1>LED matrix emulator</h1>
+  <span id="link">connecting…</span>
+</header>
+<main id="panels"></main>
+<script>
+"use strict";
+const W = 9, H = 34;
+// Layout in units of the LED pitch: the real module's rows sit slightly
+// further apart than its columns.
+const PITCH_Y = 1.1, MARGIN = 0.6, FRAME = 0.22;
+const panelW = W + 2 * (MARGIN + FRAME);
+const panelH = (H - 1) * PITCH_Y + 1 + 2 * (MARGIN + FRAME);
+
+const main = document.getElementById("panels");
+const linkEl = document.getElementById("link");
+const views = new Map();
+let pitch = 0, dpr = 1;
+
+// A white glow, drawn once and stamped onto every lit LED.
+let glow = null;
+function makeGlow(p) {
+  const r = Math.ceil(p * 0.9);
+  const c = document.createElement("canvas");
+  c.width = c.height = 2 * r;
+  const g = c.getContext("2d");
+  const grad = g.createRadialGradient(r, r, 0, r, r, r);
+  grad.addColorStop(0, "rgba(240,245,255,0.95)");
+  grad.addColorStop(0.22, "rgba(228,236,255,0.7)");
+  grad.addColorStop(0.45, "rgba(210,222,255,0.22)");
+  grad.addColorStop(1, "rgba(200,215,255,0)");
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 2 * r, 2 * r);
+  return { canvas: c, r };
+}
+
+function ledCentre(x, y) {
+  const o = (FRAME + MARGIN + 0.5) * pitch;
+  return [o + x * pitch, o + y * PITCH_Y * pitch];
+}
+
+function roundRect(g, x, y, w, h, r) {
+  g.beginPath();
+  g.roundRect(x, y, w, h, r);
+}
+
+// The board with every LED unlit: acrylic frame, dark PCB and the yellow
+// SMD packages, set at an angle as on the real module.
+function drawBoard() {
+  const c = document.createElement("canvas");
+  c.width = Math.round(panelW * pitch);
+  c.height = Math.round(panelH * pitch);
+  const g = c.getContext("2d");
+  const f = FRAME * pitch;
+
+  roundRect(g, 0.5, 0.5, c.width - 1, c.height - 1, f * 1.6);
+  g.fillStyle = "rgba(190,200,212,0.16)";
+  g.fill();
+  g.strokeStyle = "rgba(230,236,245,0.35)";
+  g.lineWidth = 1;
+  g.stroke();
+
+  const pcb = g.createLinearGradient(0, 0, c.width, c.height);
+  pcb.addColorStop(0, "#2a2c31");
+  pcb.addColorStop(1, "#1d1e22");
+  roundRect(g, f, f, c.width - 2 * f, c.height - 2 * f, f * 0.6);
+  g.fillStyle = pcb;
+  g.fill();
+
+  const L = 0.44 * pitch, Wd = 0.25 * pitch, cap = 0.085 * pitch;
+  for (let x = 0; x < W; x++) {
+    for (let y = 0; y < H; y++) {
+      const [cx, cy] = ledCentre(x, y);
+      g.save();
+      g.translate(cx, cy);
+      g.rotate(-Math.PI * 0.32);
+      g.fillStyle = "rgba(0,0,0,0.35)";
+      g.fillRect(-L / 2 + 1, -Wd / 2 + 1, L, Wd);
+      g.fillStyle = "#cfa636";
+      g.fillRect(-L / 2, -Wd / 2, L, Wd);
+      g.fillStyle = "#e6d79a";
+      g.fillRect(-L / 2 + cap, -Wd / 2 + Wd * 0.2, L - 2 * cap, Wd * 0.25);
+      g.fillStyle = "#cfcabb";
+      g.fillRect(-L / 2, -Wd / 2, cap, Wd);
+      g.fillRect(L / 2 - cap, -Wd / 2, cap, Wd);
+      g.restore();
+    }
+  }
+  return c;
+}
+
+function layout() {
+  const n = Math.max(views.size, 1);
+  const availH = window.innerHeight - 140;
+  const availW = (window.innerWidth - 32 - (n - 1) * 48) / n;
+  const css = Math.max(6, Math.min(availH / panelH, availW / panelW));
+  dpr = window.devicePixelRatio || 1;
+  pitch = css * dpr;
+  glow = makeGlow(pitch);
+  const board = drawBoard();
+  for (const v of views.values()) {
+    v.board = board;
+    v.canvas.width = board.width;
+    v.canvas.height = board.height;
+    v.canvas.style.width = board.width / dpr + "px";
+    v.canvas.style.height = board.height / dpr + "px";
+    render(v);
+  }
+}
+
+function render(v) {
+  const g = v.canvas.getContext("2d");
+  g.globalCompositeOperation = "source-over";
+  g.globalAlpha = 1;
+  g.drawImage(v.board, 0, 0);
+  if (!v.state) return;
+  const px = v.pixels, b = v.state.brightness / 255;
+  const level = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    // The module dims each LED by the global brightness; the square-ish
+    // root stands in for how much brighter dim LEDs look than they are.
+    level[i] = px[i] ? Math.pow((px[i] / 255) * b, 1 / 2.2) : 0;
+  }
+  g.globalCompositeOperation = "lighter";
+  for (let x = 0; x < W; x++) {
+    for (let y = 0; y < H; y++) {
+      const a = level[x * H + y];
+      if (!a) continue;
+      const [cx, cy] = ledCentre(x, y);
+      g.globalAlpha = a;
+      g.drawImage(glow.canvas, cx - glow.r, cy - glow.r);
+    }
+  }
+  // A solid white core over the package, as the photo shows lit LEDs.
+  g.globalCompositeOperation = "source-over";
+  for (let x = 0; x < W; x++) {
+    for (let y = 0; y < H; y++) {
+      const a = level[x * H + y];
+      if (!a) continue;
+      const [cx, cy] = ledCentre(x, y);
+      g.globalAlpha = Math.min(1, a * 1.15);
+      g.fillStyle = "#fbfcff";
+      g.beginPath();
+      g.arc(cx, cy, 0.19 * pitch, 0, 2 * Math.PI);
+      g.fill();
+    }
+  }
+  g.globalAlpha = 1;
+}
+
+function makeView(state) {
+  const fig = document.createElement("figure");
+  const canvas = document.createElement("canvas");
+  const cap = document.createElement("figcaption");
+  cap.innerHTML = '<div class="name"><span class="dot"></span><span></span></div>' +
+    '<div class="meta"></div><div class="path"></div>';
+  fig.append(canvas, cap);
+  main.append(fig);
+  const v = {
+    canvas,
+    dot: cap.querySelector(".dot"),
+    name: cap.querySelector(".name span:last-child"),
+    meta: cap.querySelector(".meta"),
+    path: cap.querySelector(".path"),
+    fps: 0, lastFrames: null, lastT: performance.now(), cmdAt: null,
+  };
+  views.set(state.name, v);
+  return v;
+}
+
+function decode(b64) {
+  const s = atob(b64);
+  const a = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i);
+  return a;
+}
+
+function caption(v) {
+  const s = v.state;
+  v.name.textContent = s.name;
+  // A running led-clock changes every panel at least once a minute.
+  const since = v.cmdAt === null ? null : (performance.now() - v.cmdAt) / 1000;
+  const live = since !== null && since < 65;
+  v.dot.classList.toggle("on", live);
+  v.dot.title = live ? "receiving commands" : "no commands for over a minute: is led-clock running?";
+  const ago = since === null ? "no commands yet" :
+    since < 1 ? "last command just now" :
+    "last command " + (since < 60 ? since.toFixed(0) + "s" : Math.floor(since / 60) + "m") + " ago";
+  v.meta.textContent = ago + " · brightness " + s.brightness + " · " + v.fps.toFixed(0) + " fps";
+  v.path.textContent = s.path;
+}
+
+// Frames per second, from the panel's frame count once a second.
+setInterval(() => {
+  const now = performance.now();
+  for (const v of views.values()) {
+    if (!v.state) continue;
+    if (v.lastFrames !== null) v.fps = (v.state.frames - v.lastFrames) * 1000 / (now - v.lastT);
+    v.lastFrames = v.state.frames;
+    v.lastT = now;
+    caption(v);
+  }
+}, 1000);
+
+let pending = null;
+function onStates(states) {
+  let added = false;
+  for (const s of states) {
+    let v = views.get(s.name);
+    if (!v) { v = makeView(s); added = true; }
+    v.state = s;
+    v.pixels = decode(s.pixels);
+    v.cmdAt = s.sinceCommand < 0 ? null : performance.now() - s.sinceCommand;
+  }
+  if (added) layout();
+  if (!pending) {
+    pending = requestAnimationFrame(() => {
+      pending = null;
+      for (const v of views.values()) { render(v); caption(v); }
+    });
+  }
+}
+
+// The state when the page was served, so it draws before the stream starts.
+const initial = /*INITIAL*/null;
+if (initial) onStates(initial);
+
+const es = new EventSource("events");
+es.onopen = () => { linkEl.textContent = ""; };
+es.onerror = () => { linkEl.textContent = "emulator not running — retrying…"; };
+es.onmessage = (e) => onStates(JSON.parse(e.data));
+window.addEventListener("resize", layout);
+</script>
+</body>
+</html>

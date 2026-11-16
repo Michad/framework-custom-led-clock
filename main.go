@@ -1,6 +1,7 @@
 // Command led-clock drives two Framework 16 LED matrix modules: the left one
 // shows the time (24h HH:MM), the right one fills up over each minute. With
 // -compact left or -compact right it drives just that matrix, showing both.
+// With -emulator it drives led-emulator's emulated matrices instead.
 package main
 
 import (
@@ -25,6 +26,7 @@ func main() {
 	dawn := flag.String("dawn", "07:00", "time of day (HH:MM) to start brightening to -brightness")
 	dusk := flag.String("dusk", "21:00", "time of day (HH:MM) to start dimming to -night-brightness")
 	transition := flag.Duration("transition", time.Hour, "how long brightening and dimming take")
+	emulate := flag.Bool("emulator", false, "drive emulated matrices instead of real ones: start led-emulator (from next to this program, or $PATH), use its ports and stop it on exit; not allowed with -left or -right")
 	var compact compactFlag
 	flag.Var(&compact, "compact", "drive a single matrix, left (the default) or right, e.g. -compact right: the time on its left and the seconds in its three rightmost columns")
 	fillName := flag.String("fill", "slideup", "how the seconds display fills up, as mode[,parameters]: slideup (from the bottom, row by row), slidedown (from the top, row by row), random (random LEDs fade in), creepup (each column grows on its own at a wobbling speed), creepdown (likewise, from the top), spiral (clockwise round the edge from the top left, winding inwards), disco (random LEDs flash on and off, the share lit tracking the minute), topo[,N] (random pixels fade in N at a time, default 5, pulling their neighbours up with them), infect[,N] (light spreads out from N random seeds, default 3) or binary (boxes growing from the top left, each about doubling the area before it, count up in binary)")
@@ -63,6 +65,32 @@ func main() {
 			log.Fatal(err)
 		}
 		log.Printf("brightness %d by day, %d at night; dawn=%s dusk=%s transition=%s", schedule.Day, schedule.Night, *dawn, *dusk, *transition)
+	}
+
+	if *emulate {
+		if *leftPath != "" || *rightPath != "" {
+			log.Fatal("-emulator can't be used with -left or -right")
+		}
+		bin, err := FindEmulator()
+		if err != nil {
+			log.Fatal(err)
+		}
+		names := []string{"left", "right"}
+		if compact.side != "" {
+			names = []string{compact.side}
+		}
+		emu, ports, err := StartEmulator(bin, names)
+		if err != nil {
+			log.Fatal(err)
+		}
+		// Deferred first, so it runs last: after the displays are
+		// blanked and the ports closed.
+		defer func() {
+			if err := emu.Stop(); err != nil {
+				log.Print(err)
+			}
+		}()
+		*leftPath, *rightPath = ports["left"], ports["right"]
 	}
 
 	// In compact mode, compactPath is the one matrix to drive: -left or
