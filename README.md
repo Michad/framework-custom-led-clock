@@ -5,7 +5,9 @@ A clock for the two LED matrix input modules on the Framework Laptop 16.
 - **Left matrix:** the time in 24-hour format, hours stacked above minutes.
 - **Right matrix:** fills up over each minute, LED by LED, each LED fading
   in. Every LED is fully lit by the end of the minute. How it fills is set
-  by `-fill` (see [Fill modes](#fill-modes)).
+  by `-fill` (see [Fill modes](#fill-modes)). Or, with `-seconds centis`,
+  the seconds above the centiseconds as digits (see
+  [Centiseconds](#centiseconds)).
 - **On the minute:** the seconds display empties by playing its fill
   backwards, sped up to last `-roll`, while each clock digit that changed
   scrambles into random noise and resolves into its new value.
@@ -18,7 +20,8 @@ A clock for the two LED matrix input modules on the Framework Laptop 16.
 It runs until it receives SIGINT, SIGTERM or SIGHUP, then blanks the
 displays and exits. Between refreshes it sleeps (every 50ms normally, 16ms
 during the minute-change animation), and frames that haven't changed aren't
-resent, so it uses well under 1% CPU.
+resent, so it uses well under 1% CPU (about 2% with `-seconds centis`,
+which refreshes every 10ms).
 
 ## Building
 
@@ -44,12 +47,14 @@ make
 | `-dawn` | `07:00` | Time of day to start brightening to `-brightness` |
 | `-dusk` | `21:00` | Time of day to start dimming to `-night-brightness` |
 | `-transition` | `1h` | How long brightening and dimming take |
-| `-fill` | `slideup` | How the seconds display fills, as `mode[,parameters]`: `slideup`, `slidedown`, `random`, `creepup`, `creepdown`, `spiral`, `disco`, `topo[,N]`, `infect[,N]` or `binary` (see [Fill modes](#fill-modes)) |
-| `-fade` | `1s` | How long each seconds LED takes to fade in (not used by `disco`, `topo` or `infect`) |
+| `-seconds` | `fill` | How the seconds are shown: `fill` (LEDs filling up over the minute, as set by `-fill`) or `centis` (the seconds above the centiseconds as digits; see [Centiseconds](#centiseconds)) |
+| `-fill` | `slideup` | How the seconds display fills, as `mode[,parameters]`: `slideup`, `slidedown`, `random`, `creepup`, `creepdown`, `spiral`, `disco`, `topo[,N]`, `infect[,N]`, `binary` or `shuffle[,MINUTES]` (see [Fill modes](#fill-modes)) |
+| `-fade` | `1s` | How long each seconds LED takes to fade in (not used by `disco`, `topo` or `infect`). Not allowed with `-seconds centis`, nor is `-fill` |
 | `-roll` | `1s` | Length of the minute-change animations; 0 disables them |
-| `-interval` | `50ms` | Sleep between refreshes |
+| `-interval` | `50ms` | Sleep between refreshes; `10ms` with `-seconds centis` |
 | `-roll-interval` | `16ms` | Sleep between refreshes during the minute-change animation |
 | `-emulator` | off | Run on emulated matrices instead (see [Emulator](#emulator)); not allowed with `-left` or `-right` |
+| `-emulator-listen` | `localhost:8034` | With `-emulator`, where the emulator serves its page: passed on as its `-listen` |
 
 Without `-left` and `-right`, the matrices are found by USB ID (`32ac:0020`)
 and sorted by device path; the second becomes the left matrix and the first
@@ -71,7 +76,7 @@ there's no telling which side it's on.
 ### Fill modes
 
 `-fill` takes a mode's name, then any parameters it has after commas,
-e.g. `-fill topo,2`. Only `topo` and `infect` take one.
+e.g. `-fill topo,2`. Only `topo`, `infect` and `shuffle` take one.
 
 | `-fill` | Filling up | Emptying on the minute |
 |---|---|---|
@@ -85,6 +90,7 @@ e.g. `-fill topo,2`. Only `topo` and `infect` take one.
 | `topo[,N]` | Random pixels fade in N at a time (default 5), each pulling its neighbours part way up with it, so the light spreads in smooth, growing patches | Rewinds, the patches shrinking away |
 | `infect[,N]` | N random seeds (default 3) fade in at the start of the minute, and the light spreads out from them, each LED brightening in proportion to how bright its neighbours are | Rewinds, the light drawing back into the seeds |
 | `binary` | Boxes growing from the top left, each about doubling the area before it, count up in binary: box N is lit while bit N of the count is set | Counts back down to zero |
+| `shuffle[,MINUTES]` | A different one of the modes above, picked at random every MINUTES minutes (default 60, with the mode's default parameters) | The mode in force that minute; when the mode changes, the old mode's emptying |
 
 In `creepup` (and `creepdown`), each column's speed follows a squared-off sine wave with a
 random period (12-30s) and phase, so it lingers at fast or slow and eases
@@ -142,6 +148,28 @@ by more than 10% a step, and light an LED can't take goes to the others,
 so the light spreads steadily outwards from the seeds while the average
 brightness tracks the minute exactly.
 
+### Centiseconds
+
+With `-seconds centis`, the seconds matrix shows the seconds and
+hundredths of a second as digits instead of filling up: the seconds above
+the centiseconds, in the same font and layout as the clock's hours above
+its minutes, so 18:08:42.37 shows `18`/`08` on the left and `42`/`37` on
+the right. In compact mode the three seconds columns get 3x5 digits, each
+centred beside the clock digit in the same position.
+
+The centiseconds are truncated, not rounded, and there's no animation on
+the minute: the counter just runs from 59.99 to 00.00 while the clock
+digits scramble as usual. `-fill` and `-fade` don't apply, so they're not
+allowed with it.
+
+To keep up, `-interval` defaults to `10ms` instead, and each refresh is
+timed to land just after a centisecond boundary rather than drifting
+against them, so every hundredth is shown. That's about 100 frames a
+second to the seconds matrix (some 35KB/s over USB), and about 2% CPU
+rather than well under 1%. A longer `-interval` skips
+hundredths but stays aligned to them; e.g. `-interval 50ms` shows every
+fifth.
+
 ### Dimming at night
 
 With `-night-brightness`, the brightness follows the local time of day: it
@@ -197,7 +225,8 @@ make emulator
 
 This starts `led-emulator` (the one next to `led-clock`, else the one on
 `$PATH`), runs the clock on its matrices, and stops it when the clock
-exits. Open the address it prints (http://127.0.0.1:8034/). It works with
+exits. Open the address it prints (http://localhost:8034/, served on both
+127.0.0.1 and ::1; choose others with `-emulator-listen`). It works with
 `-compact left` or `-compact right`, emulating just that matrix, but not
 with `-left` or `-right`. `make emulate` builds both and runs
 `./led-clock -emulator`; pass more flags with `ARGS`, e.g.
@@ -226,9 +255,18 @@ and run `./led-clock -compact left -left /tmp/led-emulator/left`.
 |---|---|---|
 | `-panels` | `left,right` | Names of the matrices to emulate, shown left to right |
 | `-dir` | `$TMPDIR/led-emulator` | Where to put a symlink to each matrix's port, named after it (empty for none; then use the `/dev/pts/N` paths it prints) |
-| `-listen` | `127.0.0.1:8034` | Address to serve the page on |
+| `-listen` | `localhost:8034` | Addresses to serve the page on, comma-separated (see below) |
 | `-brightness` | `255` | Brightness the matrices start at, until `led-clock` sets it |
 | `-hint` | `true` | Print the ports and the `led-clock` command to run |
+
+`-listen` takes one or more addresses separated by commas, IPv6 ones in
+square brackets: `-listen '[::1]:8034'` for IPv6 loopback only, or
+`-listen '127.0.0.1:8034,[fd00::5]:8034'` for two. `localhost` stands for
+both loopback addresses, 127.0.0.1 and ::1, so the page loads whichever
+the browser tries (if IPv6 is disabled, 127.0.0.1 alone does). An empty
+host, as in `-listen :8034`, or `[::]`, as in `-listen '[::]:8034'`,
+serves on every address, IPv4 and IPv6, so other machines can watch too
+(if the firewall lets them in). The page is unauthenticated and read-only.
 
 Under each panel the page shows when it last got a command, its brightness
 and the frames per second it's receiving. The left matrix only changes when
@@ -263,13 +301,13 @@ second of quiet so the next `led-clock` can open it.
 | `emulator.go` | `-emulator`: starting and stopping `led-emulator` |
 | `ledmatrix.go` | Serial protocol and device discovery |
 | `schedule.go` | Time-of-day brightness schedule |
-| `render.go` | Clock font and layout, seconds display, minute-change animations |
+| `render.go` | Clock font and layout, seconds display (fill and centiseconds), minute-change animations |
 | `fill.go` | Seconds fill modes: the order and timing the LEDs come on in |
 | `schedule_test.go` | Tests for the brightness schedule |
-| `render_test.go` | Tests for the compact layout and fill modes |
+| `render_test.go` | Tests for the compact layout, fill modes and centiseconds |
 | `compact_test.go` | Tests for parsing `-compact` |
 | `preview_test.go` | Renders digits to a PNG for `make preview` |
-| `cmd/led-emulator/` | The hardware emulator: pseudo-terminals (`pty.go`), protocol decoding (`panel.go`), web page (`web.go`, `index.html`) |
+| `cmd/led-emulator/` | The hardware emulator: pseudo-terminals (`pty.go`), protocol decoding (`panel.go`), web page (`web.go`, `index.html`), listening (`listen.go`) |
 
 ### Changing the digits
 

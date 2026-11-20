@@ -43,6 +43,9 @@ const (
 	// over the minute, box i lit while bit i of the
 	// count is set.
 	FillBinary
+	// FillShuffle isn't a fill itself: it picks one of the others at random
+	// each hour. Use Fill.At to get the mode in force for a minute.
+	FillShuffle
 )
 
 var fillModeNames = map[FillMode]string{
@@ -56,6 +59,7 @@ var fillModeNames = map[FillMode]string{
 	FillCreepDown: "creepdown",
 	FillSpiral:    "spiral",
 	FillBinary:    "binary",
+	FillShuffle:   "shuffle",
 }
 
 func (m FillMode) String() string { return fillModeNames[m] }
@@ -77,6 +81,8 @@ var fillCounts = map[FillMode]struct {
 }{
 	FillTopo:   {5, "pixels fading in at a time"},
 	FillInfect: {3, "seeds"},
+	// shuffle's count is how many minutes it keeps each pick for.
+	FillShuffle: {60, "minutes between changes"},
 }
 
 // ParseFill parses a -fill flag value.
@@ -93,7 +99,7 @@ func ParseFill(s string) (Fill, error) {
 		}
 	}
 	if f.Mode == -1 {
-		return Fill{}, fmt.Errorf("unknown fill mode %q (want slideup, slidedown, random, creepup, creepdown, spiral, disco, topo, infect or binary)", name)
+		return Fill{}, fmt.Errorf("unknown fill mode %q (want slideup, slidedown, random, creepup, creepdown, spiral, disco, topo, infect, binary or shuffle)", name)
 	}
 	count, takesCount := fillCounts[f.Mode]
 	if !takesCount {
@@ -114,6 +120,35 @@ func ParseFill(s string) (Fill, error) {
 		f.N = n
 	}
 	return f, nil
+}
+
+// At returns the concrete fill in force during the given minute (Unix
+// time / 60). Anything but shuffle is returned as is; shuffle picks a mode
+// at random every f.N minutes (an hour if unset), as a pure function of
+// which run of f.N minutes since the Unix epoch the minute falls in, with
+// the picked mode's default parameters.
+func (f Fill) At(minute int64) Fill {
+	if f.Mode != FillShuffle {
+		return f
+	}
+	period := int64(f.N)
+	if period < 1 {
+		period = int64(fillCounts[FillShuffle].def)
+	}
+	slot := minute / period
+	if minute < 0 && minute%period != 0 {
+		slot--
+	}
+	picks := make([]FillMode, 0, len(fillModeNames))
+	for m := FillMode(0); m < FillShuffle; m++ {
+		picks = append(picks, m)
+	}
+	m := picks[int(random(uint64(slot)^0x5eed)*float64(len(picks)))]
+	pick := Fill{Mode: m}
+	if c, ok := fillCounts[m]; ok {
+		pick.N = c.def
+	}
+	return pick
 }
 
 func (f Fill) String() string {

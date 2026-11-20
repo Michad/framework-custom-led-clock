@@ -10,7 +10,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,7 +21,7 @@ import (
 )
 
 func main() {
-	listen := flag.String("listen", "127.0.0.1:8034", "address to serve the web view on")
+	listen := flag.String("listen", "localhost:8034", "comma-separated addresses to serve the web view on, IPv6 ones in brackets, e.g. [::1]:8034; localhost means both 127.0.0.1 and ::1, and an empty host (:8034) every address")
 	names := flag.String("panels", "left,right", "comma-separated names of the panels to emulate, shown left to right; one name emulates a single module, for -compact")
 	dir := flag.String("dir", filepath.Join(os.TempDir(), "led-emulator"), "directory to create a symlink to each panel's port in, named after the panel (empty to skip)")
 	brightness := flag.Uint("brightness", 255, "brightness (0-255) the panels start at, until a Brightness command sets it")
@@ -76,15 +75,18 @@ func main() {
 		go readPort(p, pty)
 	}
 
-	ln, err := net.Listen("tcp", *listen)
+	lns, err := listenAll(*listen)
 	if err != nil {
 		log.Fatal(err)
 	}
-	go func() {
-		log.Fatal(http.Serve(ln, newServer(panels, hub)))
-	}()
+	server := newServer(panels, hub)
+	for _, ln := range lns {
+		go func() {
+			log.Fatal(http.Serve(ln, server))
+		}()
+	}
 
-	fmt.Printf("Emulating %d LED matrix module(s). Watch them at http://%s/\n", len(panels), ln.Addr())
+	fmt.Printf("Emulating %d LED matrix module(s). Watch them at %s\n", len(panels), strings.Join(pageURLs(lns), " or "))
 	if *hint {
 		fmt.Println()
 		for _, p := range panels {

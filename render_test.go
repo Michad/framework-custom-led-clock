@@ -517,6 +517,8 @@ func TestParseFill(t *testing.T) {
 		{"infect", Fill{Mode: FillInfect, N: 3}},
 		{"infect,8", Fill{Mode: FillInfect, N: 8}},
 		{"binary", Fill{Mode: FillBinary}},
+		{"shuffle", Fill{Mode: FillShuffle, N: 60}},
+		{"shuffle,5", Fill{Mode: FillShuffle, N: 5}},
 	} {
 		got, err := ParseFill(c.in)
 		if err != nil || got != c.want {
@@ -526,7 +528,7 @@ func TestParseFill(t *testing.T) {
 			t.Errorf("ParseFill(%q).String() = %q doesn't parse back", c.in, got.String())
 		}
 	}
-	for _, in := range []string{"", "nope", "slideup,2", "disco,", "topo,", "topo,0", "topo,-1", "topo,x", "topo,2,3", "Topo", "infect,0", "infect,x", "binary,2"} {
+	for _, in := range []string{"", "nope", "slideup,2", "disco,", "topo,", "topo,0", "topo,-1", "topo,x", "topo,2,3", "Topo", "infect,0", "infect,x", "binary,2", "shuffle,0", "shuffle,x"} {
 		if f, err := ParseFill(in); err == nil {
 			t.Errorf("ParseFill(%q) = %+v, want an error", in, f)
 		}
@@ -734,5 +736,112 @@ func TestBinaryCounts(t *testing.T) {
 				t.Fatalf("count %d: LED %d (box %d) = %d, want %d", count, led, b, got, want)
 			}
 		}
+	}
+}
+
+func TestCentisFrame(t *testing.T) {
+	now := time.Date(2026, 1, 1, 18, 8, 42, 370_000_000, time.Local)
+	f := CentisFrame(now)
+	// Laid out as the clock's HH over MM would be.
+	var want Frame
+	for i, c := range "4237" {
+		drawDigit(&want, i, c, clockX)
+	}
+	if *f != want {
+		t.Error("CentisFrame at :42.37 doesn't match the clock layout of 42 over 37")
+	}
+	// Centiseconds truncate rather than round.
+	if *CentisFrame(now.Add(9 * time.Millisecond)) != *f {
+		t.Error("CentisFrame changed within a centisecond")
+	}
+	if *CentisFrame(now.Add(10 * time.Millisecond)) == *f {
+		t.Error("CentisFrame didn't change after a centisecond")
+	}
+}
+
+func TestCompactCentisFrame(t *testing.T) {
+	now := time.Date(2026, 1, 1, 18, 8, 5, 90_000_000, time.Local)
+	f := CompactCentisFrame(now, time.Second)
+	clock := CompactFrame(now, Fill{Mode: FillSlideUp}, 0, time.Second, time.Minute)
+	x0 := Width - compactSecondsCols
+	for y := 0; y < Height; y++ {
+		for x := 0; x < x0; x++ {
+			if f[x][y] != clock[x][y] {
+				t.Errorf("clock pixel (%d,%d) = %d, want %d", x, y, f[x][y], clock[x][y])
+			}
+		}
+	}
+	// 05.09, each 3x5 digit centred in its clock digit's rows.
+	for i, c := range "0509" {
+		top := digitRows[i] + 1
+		for gy := -1; gy < 6; gy++ {
+			for gx := 0; gx < 3; gx++ {
+				want := byte(0)
+				if gy >= 0 && gy < 5 && smallDigits[c][gy][gx] == '#' {
+					want = digitLevel
+				}
+				if got := f[x0+gx][top+gy]; got != want {
+					t.Errorf("digit %d pixel (%d,%d) = %d, want %d", i, gx, gy, got, want)
+				}
+			}
+		}
+	}
+}
+
+func TestAlignToCentisecond(t *testing.T) {
+	ms := time.Millisecond
+	for _, tc := range []struct {
+		intoMs, d, want time.Duration
+	}{
+		{3 * ms, 10 * ms, 7 * ms},
+		{0, 10 * ms, 10 * ms},
+		{9*ms + 999_999, 10 * ms, 1},
+		{3 * ms, 50 * ms, 47 * ms},
+		{3 * ms, 2 * ms, 7 * ms},
+	} {
+		now := time.Date(2026, 1, 1, 0, 0, 0, int(tc.intoMs), time.Local)
+		if got := alignToCentisecond(now, tc.d); got != tc.want {
+			t.Errorf("alignToCentisecond(+%s, %s) = %s, want %s", tc.intoMs, tc.d, got, tc.want)
+		}
+	}
+}
+
+func TestShuffleAt(t *testing.T) {
+	f := Fill{Mode: FillShuffle}
+	seen := map[FillMode]bool{}
+	for hour := int64(0); hour < 200; hour++ {
+		first := f.At(hour * 60)
+		if first.Mode == FillShuffle {
+			t.Fatalf("hour %d resolved to shuffle", hour)
+		}
+		for _, m := range []int64{1, 30, 59} {
+			if got := f.At(hour*60 + m); got != first {
+				t.Fatalf("hour %d: minute %d gave %v, want %v", hour, m, got, first)
+			}
+		}
+		seen[first.Mode] = true
+	}
+	if len(seen) != int(FillShuffle) {
+		t.Errorf("shuffle picked %d modes in 200 hours, want all %d", len(seen), FillShuffle)
+	}
+	if got := (Fill{Mode: FillSpiral}).At(5); got.Mode != FillSpiral {
+		t.Errorf("non-shuffle fill changed: %v", got)
+	}
+}
+
+func TestShuffleEveryMinutes(t *testing.T) {
+	f := Fill{Mode: FillShuffle, N: 7}
+	changes := 0
+	for minute := int64(0); minute < 7*100; minute++ {
+		got := f.At(minute)
+		if minute%7 != 0 && got != f.At(minute-1) {
+			t.Fatalf("minute %d changed mid-period", minute)
+		}
+		if minute > 0 && got != f.At(minute-1) {
+			changes++
+		}
+	}
+	if changes < 50 {
+		t.Errorf("only %d changes in 100 periods", changes)
 	}
 }

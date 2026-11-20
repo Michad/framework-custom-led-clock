@@ -17,7 +17,7 @@ import (
 func main() {
 	leftPath := flag.String("left", "", "serial device of the left matrix (default: auto-detect)")
 	rightPath := flag.String("right", "", "serial device of the right matrix (default: auto-detect)")
-	interval := flag.Duration("interval", 50*time.Millisecond, "time to sleep between display refreshes")
+	interval := flag.Duration("interval", 50*time.Millisecond, "time to sleep between display refreshes (default 10ms with -seconds centis)")
 	fade := flag.Duration("fade", time.Second, "how long each seconds LED takes to fade in")
 	roll := flag.Duration("roll", time.Second, "how long the minute-change animations last: the seconds clearing (the fill in reverse) and the clock digit scramble (0 disables them)")
 	rollInterval := flag.Duration("roll-interval", 16*time.Millisecond, "time to sleep between display refreshes during the minute-change animations")
@@ -27,9 +27,11 @@ func main() {
 	dusk := flag.String("dusk", "21:00", "time of day (HH:MM) to start dimming to -night-brightness")
 	transition := flag.Duration("transition", time.Hour, "how long brightening and dimming take")
 	emulate := flag.Bool("emulator", false, "drive emulated matrices instead of real ones: start led-emulator (from next to this program, or $PATH), use its ports and stop it on exit; not allowed with -left or -right")
+	emulatorListen := flag.String("emulator-listen", "", "with -emulator, the addresses for led-emulator to serve its page on, as its -listen (default localhost:8034, which is both 127.0.0.1 and ::1)")
 	var compact compactFlag
 	flag.Var(&compact, "compact", "drive a single matrix, left (the default) or right, e.g. -compact right: the time on its left and the seconds in its three rightmost columns")
-	fillName := flag.String("fill", "slideup", "how the seconds display fills up, as mode[,parameters]: slideup (from the bottom, row by row), slidedown (from the top, row by row), random (random LEDs fade in), creepup (each column grows on its own at a wobbling speed), creepdown (likewise, from the top), spiral (clockwise round the edge from the top left, winding inwards), disco (random LEDs flash on and off, the share lit tracking the minute), topo[,N] (random pixels fade in N at a time, default 5, pulling their neighbours up with them), infect[,N] (light spreads out from N random seeds, default 3) or binary (boxes growing from the top left, each about doubling the area before it, count up in binary)")
+	fillName := flag.String("fill", "slideup", "how the seconds display fills up, as mode[,parameters]: slideup (from the bottom, row by row), slidedown (from the top, row by row), random (random LEDs fade in), creepup (each column grows on its own at a wobbling speed), creepdown (likewise, from the top), spiral (clockwise round the edge from the top left, winding inwards), disco (random LEDs flash on and off, the share lit tracking the minute), topo[,N] (random pixels fade in N at a time, default 5, pulling their neighbours up with them), infect[,N] (light spreads out from N random seeds, default 3) or binary (boxes growing from the top left, each about doubling the area before it, count up in binary) or shuffle[,MINUTES] (a different one of these, picked at random, every MINUTES minutes, default 60)")
+	secondsMode := flag.String("seconds", "fill", "how the seconds are shown: fill (LEDs filling up over the minute, as set by -fill) or centis (the seconds above the centiseconds, as digits)")
 	if err := parseArgs(flag.CommandLine, os.Args[1:], &compact); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		flag.Usage()
@@ -39,6 +41,25 @@ func main() {
 	fill, err := ParseFill(*fillName)
 	if err != nil {
 		log.Fatalf("-fill: %v", err)
+	}
+
+	set := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	var showCentis bool
+	switch *secondsMode {
+	case "fill":
+	case "centis":
+		showCentis = true
+		for _, name := range []string{"fill", "fade"} {
+			if set[name] {
+				log.Fatalf("-%s can't be used with -seconds centis", name)
+			}
+		}
+		if !set["interval"] {
+			*interval = centisecond
+		}
+	default:
+		log.Fatalf("-seconds: want fill or centis, got %q", *secondsMode)
 	}
 
 	var schedule *BrightnessSchedule
@@ -67,6 +88,9 @@ func main() {
 		log.Printf("brightness %d by day, %d at night; dawn=%s dusk=%s transition=%s", schedule.Day, schedule.Night, *dawn, *dusk, *transition)
 	}
 
+	if *emulatorListen != "" && !*emulate {
+		log.Fatal("-emulator-listen requires -emulator")
+	}
 	if *emulate {
 		if *leftPath != "" || *rightPath != "" {
 			log.Fatal("-emulator can't be used with -left or -right")
@@ -79,7 +103,11 @@ func main() {
 		if compact.side != "" {
 			names = []string{compact.side}
 		}
-		emu, ports, err := StartEmulator(bin, names)
+		var extra []string
+		if *emulatorListen != "" {
+			extra = []string{"-listen", *emulatorListen}
+		}
+		emu, ports, err := StartEmulator(bin, names, extra...)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -138,10 +166,14 @@ func main() {
 			*rightPath = found[0]
 		}
 	}
+	secondsDesc := fmt.Sprintf("fill=%s fade=%s", fill, *fade)
+	if showCentis {
+		secondsDesc = "seconds=centis"
+	}
 	if compact.side != "" {
-		log.Printf("compact %s matrix=%s interval=%s fill=%s fade=%s roll=%s", compact.side, compactPath, *interval, fill, *fade, *roll)
+		log.Printf("compact %s matrix=%s interval=%s %s roll=%s", compact.side, compactPath, *interval, secondsDesc, *roll)
 	} else {
-		log.Printf("left=%s right=%s interval=%s fill=%s fade=%s roll=%s", *leftPath, *rightPath, *interval, fill, *fade, *roll)
+		log.Printf("left=%s right=%s interval=%s %s roll=%s", *leftPath, *rightPath, *interval, secondsDesc, *roll)
 	}
 
 	// open opens the matrix at path, adding it to matrices.
@@ -199,7 +231,11 @@ func main() {
 			setBrightness(schedule.At(now))
 		}
 		if single != nil {
-			if err := single.Draw(CompactFrame(now, fill, *fade, *roll, fillBy)); err != nil {
+			f := CompactFrame(now, fill, *fade, *roll, fillBy)
+			if showCentis {
+				f = CompactCentisFrame(now, *roll)
+			}
+			if err := single.Draw(f); err != nil {
 				log.Print(err)
 			}
 			return
@@ -207,21 +243,31 @@ func main() {
 		if err := left.Draw(ClockFrame(now, *roll)); err != nil {
 			log.Print(err)
 		}
-		if err := right.Draw(SecondsFrame(now, fill, *fade, *roll, fillBy)); err != nil {
+		secs := SecondsFrame(now, fill, *fade, *roll, fillBy)
+		if showCentis {
+			secs = CentisFrame(now)
+		}
+		if err := right.Draw(secs); err != nil {
 			log.Print(err)
 		}
 	}
 
 	// nextDelay is how long to sleep before the next refresh: short during
 	// the minute-change animations so they run smoothly, and never past the
-	// start of the next minute so they begin on time.
+	// start of the next minute so they begin on time. When showing
+	// centiseconds, it wakes on a centisecond boundary, so each refresh
+	// lands just after the digits change rather than drifting against them.
 	nextDelay := func() time.Duration {
 		now := time.Now()
 		intoMinute := time.Duration(now.Second())*time.Second + time.Duration(now.Nanosecond())
+		d := min(*interval, time.Minute-intoMinute)
 		if intoMinute < *roll {
-			return *rollInterval
+			d = min(*rollInterval, *interval)
 		}
-		return min(*interval, time.Minute-intoMinute)
+		if showCentis {
+			d = alignToCentisecond(now, d)
+		}
+		return d
 	}
 
 	refresh()
@@ -241,4 +287,17 @@ func main() {
 			timer.Reset(nextDelay())
 		}
 	}
+}
+
+const centisecond = 10 * time.Millisecond
+
+// alignToCentisecond shortens a delay d from now so that it ends on a
+// centisecond boundary, keeping it at least to the next boundary.
+func alignToCentisecond(now time.Time, d time.Duration) time.Duration {
+	into := time.Duration(now.Nanosecond()) % centisecond
+	aligned := d - (into+d)%centisecond
+	if aligned <= 0 {
+		aligned += centisecond
+	}
+	return aligned
 }

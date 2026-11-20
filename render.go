@@ -1,6 +1,9 @@
 package main
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // 5x7 digits. '#' is a lit pixel, '.' is off. Corners are rounded by leaving
 // the corner pixel off rather than dimming it, which looks blocky on the panel.
@@ -221,59 +224,41 @@ func SecondsFrame(t time.Time, fill Fill, fade, roll, fillBy time.Duration) *Fra
 }
 
 // drawSeconds draws the seconds fill into the cols columns of f starting at
-// column x0.
+// column x0. A shuffle fill resolves to a concrete mode per minute, so at
+// the hour change the old mode's fill is rewound as the new one starts.
 func drawSeconds(f *Frame, t time.Time, fill Fill, fade, roll, fillBy time.Duration, x0, cols int) {
-	mode := fill.Mode
 	elapsed := time.Duration(t.Second())*time.Second + time.Duration(t.Nanosecond())
 	minute := t.Unix() / 60
 	pixel := func(led int) *byte { return &f[x0+led%cols][Height-1-led/cols] }
 
-	if mode == FillInfect {
+	cur := fill.At(minute)
+	drawFill(pixel, cur, cols, minute, elapsed, fade, fillBy)
+	if elapsed < roll {
+		p := float64(elapsed) / float64(roll)
+		// Ease in and out so the roll starts and lands gently.
+		p = p * p * (3 - 2*p)
+		drawRewind(pixel, fill.At(minute-1), cols, minute-1, p, fade, fillBy)
+	}
+}
+
+// drawFill draws the given minute's fill, elapsed into it. fill must be a
+// concrete mode, not shuffle.
+func drawFill(pixel func(int) *byte, fill Fill, cols int, minute int64, elapsed, fade, fillBy time.Duration) {
+	switch fill.Mode {
+	case FillInfect:
 		drawInfect(pixel, cols, minute, elapsed, fillBy, fill.N)
-		if elapsed < roll {
-			// Rewind the previous minute's infection, back to its seeds.
-			p := float64(elapsed) / float64(roll)
-			p = p * p * (3 - 2*p)
-			drawInfect(pixel, cols, minute-1, time.Duration((1-p)*float64(fillBy)), fillBy, fill.N)
-		}
 		return
-	}
-
-	if mode == FillTopo {
+	case FillTopo:
 		drawTopo(pixel, cols, minute, elapsed, fillBy, fill.N)
-		if elapsed < roll {
-			// Rewind the previous minute's topo, patches shrinking away.
-			p := float64(elapsed) / float64(roll)
-			p = p * p * (3 - 2*p)
-			drawTopo(pixel, cols, minute-1, time.Duration((1-p)*float64(fillBy)), fillBy, fill.N)
-		}
 		return
-	}
-
-	if mode == FillBinary {
+	case FillBinary:
 		drawBinary(pixel, cols, elapsed, fillBy)
-		if elapsed < roll {
-			// Count the previous minute back down to zero.
-			p := float64(elapsed) / float64(roll)
-			p = p * p * (3 - 2*p)
-			drawBinary(pixel, cols, time.Duration((1-p)*float64(fillBy)), fillBy)
-		}
 		return
-	}
-
-	if mode == FillDisco {
+	case FillDisco:
 		drawDisco(pixel, cols, minute, elapsed, fillBy)
-		if elapsed < roll {
-			// Rewind the previous minute's disco: the share lit falls from
-			// all to none, the beats racing by as fast as the rewind.
-			p := float64(elapsed) / float64(roll)
-			p = p * p * (3 - 2*p)
-			drawDisco(pixel, cols, minute-1, time.Duration((1-p)*float64(fillBy)), fillBy)
-		}
 		return
 	}
-
-	for led, start := range fillStarts(mode, cols, minute, fillBy) {
+	for led, start := range fillStarts(fill.Mode, cols, minute, fillBy) {
 		since := elapsed - start
 		if since < 0 {
 			continue
@@ -285,21 +270,39 @@ func drawSeconds(f *Frame, t time.Time, fill Fill, fade, roll, fillBy time.Durat
 		}
 		*pixel(led) = brightness(level)
 	}
+}
 
-	if elapsed < roll {
-		p := float64(elapsed) / float64(roll)
-		// Ease in and out so the roll starts and lands gently.
-		p = p * p * (3 - 2*p)
-		// The previous minute's fill, rewound: rewind runs from past fillBy
-		// back to 0, and each LED fades from full to off over edge as
-		// rewind passes back through its start time. edge is how long
-		// rollEdgeRows rows take to fill on average.
-		edge := float64(fillBy) * float64(rollEdgeRows*cols) / float64(cols*Height-1)
-		rewind := (1 - p) * (float64(fillBy) + edge)
-		for led, start := range fillStarts(mode, cols, minute-1, fillBy) {
-			level := min(max((rewind-float64(start))/edge, 0), 1)
-			*pixel(led) = max(*pixel(led), brightness(level))
-		}
+// drawRewind draws the previous minute's full fill emptying, p (0 to 1,
+// eased) of the way through the roll.
+func drawRewind(pixel func(int) *byte, fill Fill, cols int, minute int64, p float64, fade, fillBy time.Duration) {
+	back := time.Duration((1 - p) * float64(fillBy))
+	switch fill.Mode {
+	case FillInfect:
+		// Back to its seeds.
+		drawInfect(pixel, cols, minute, back, fillBy, fill.N)
+		return
+	case FillTopo:
+		// Patches shrinking away.
+		drawTopo(pixel, cols, minute, back, fillBy, fill.N)
+		return
+	case FillBinary:
+		// Count back down to zero.
+		drawBinary(pixel, cols, back, fillBy)
+		return
+	case FillDisco:
+		// The share lit falls from all to none, the beats racing by as
+		// fast as the rewind.
+		drawDisco(pixel, cols, minute, back, fillBy)
+		return
+	}
+	// Rewind runs from past fillBy back to 0, and each LED fades from full
+	// to off over edge as rewind passes back through its start time. edge
+	// is how long rollEdgeRows rows take to fill on average.
+	edge := float64(fillBy) * float64(rollEdgeRows*cols) / float64(cols*Height-1)
+	rewind := (1 - p) * (float64(fillBy) + edge)
+	for led, start := range fillStarts(fill.Mode, cols, minute, fillBy) {
+		level := min(max((rewind-float64(start))/edge, 0), 1)
+		*pixel(led) = max(*pixel(led), brightness(level))
 	}
 }
 
@@ -311,4 +314,53 @@ const rollEdgeRows = 4
 // even to the eye.
 func brightness(level float64) byte {
 	return byte(level*level*255 + 0.5)
+}
+
+// 3x5 digits for the centiseconds in compact mode, where the seconds have
+// only three columns.
+var smallDigits = map[rune][5]string{
+	'0': {"###", "#.#", "#.#", "#.#", "###"},
+	'1': {".#.", "##.", ".#.", ".#.", "###"},
+	'2': {"###", "..#", "###", "#..", "###"},
+	'3': {"###", "..#", ".##", "..#", "###"},
+	'4': {"#.#", "#.#", "###", "..#", "..#"},
+	'5': {"###", "#..", "###", "..#", "###"},
+	'6': {"###", "#..", "###", "#.#", "###"},
+	'7': {"###", "..#", ".#.", ".#.", ".#."},
+	'8': {"###", "#.#", "###", "#.#", "###"},
+	'9': {"###", "#.#", "###", "..#", "###"},
+}
+
+// centis formats the seconds and centiseconds of t as "SScc".
+func centis(t time.Time) string {
+	return t.Format("05") + fmt.Sprintf("%02d", t.Nanosecond()/1e7)
+}
+
+// CentisFrame shows the seconds above the centiseconds (SS over cc), in
+// the same font and layout as ClockFrame's HH over MM.
+func CentisFrame(t time.Time) *Frame {
+	var f Frame
+	for i, c := range centis(t) {
+		drawDigit(&f, i, c, clockX)
+	}
+	return &f
+}
+
+// CompactCentisFrame renders the clock and, in place of the seconds fill,
+// the seconds above the centiseconds in 3x5 digits, each centred in the
+// rows of the clock digit beside it.
+func CompactCentisFrame(t time.Time, roll time.Duration) *Frame {
+	var f Frame
+	drawClock(&f, t, roll, compactClockX)
+	x0 := Width - compactSecondsCols
+	for i, c := range centis(t) {
+		for gy, row := range smallDigits[c] {
+			for gx, px := range row {
+				if px == '#' {
+					f[x0+gx][digitRows[i]+1+gy] = digitLevel
+				}
+			}
+		}
+	}
+	return &f
 }
